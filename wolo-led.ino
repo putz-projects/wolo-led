@@ -18,13 +18,17 @@ int clockPin = 3;      // 'green' wire
 // Timer 1 is also used by the strip to send pixel clocks
 
 // Set the first variable to the NUMBER of pixels. 20 = 20 pixels in a row
-LPD6803 strip = LPD6803(180, dataPin, clockPin);
+const int numLEDs = 180;
+uint16_t sparklebuf[numLEDs];
+LPD6803 strip = LPD6803(numLEDs, dataPin, clockPin);
 
 void colorWipe(uint16_t c, uint8_t wait);
+void rainbow(int start, LPD6803 strip, uint8_t intensity);
+void sparkle(uint16_t* buf, uint8_t num_pts, uint8_t lo, uint8_t hi);
 unsigned int Color(byte r, byte g, byte b);
-unsigned int Color(byte r, byte g, byte b, byte i); // includes an intensity scaling factor
 unsigned int Wheel(byte);
 unsigned int Wheel(byte, byte);
+unsigned int Wheel(byte, byte, uint16_t);
 void off();
 
 //Serial incoming data
@@ -52,18 +56,20 @@ void setup() {
 }
 
 uint32_t wait = 200;
-const uint8_t intensity1 = 32;
-const uint8_t intensity2 = 120;
+const uint8_t intensity1 = 2;
+const uint8_t intensity2 = 4;
 uint8_t intensity = intensity2;
 uint32_t last = 0;
 uint16_t seed = 37;
+uint8_t* seed1 = (void*) &seed;
+uint8_t* seed2 = seed1 + 1;
 uint32_t last_command = 0;
 
 void newseed() {
-  uint8_t parity = seed >> 15;
-  parity += seed >> 13;
-  parity += seed >> 12;
-  parity += seed >> 10;
+  uint8_t parity = *seed2 >> 7;
+  parity += *seed2 >> 5;
+  parity += *seed2 >> 4;
+  parity += *seed2 >> 2;
   seed <<= 1;
   seed += parity & 1;
 }
@@ -111,16 +117,15 @@ void loop() {
       } else {
         lo = intensity;
       }
-      med = lo * 3/2;
-      hi = lo * 2;
-      for (i=0; i < strip.numPixels(); i++) {
-        if (seed % 4)
-          strip.setPixelColor(i, Wheel((i+j) % 96, lo));
-        else if (seed % 8)
-          strip.setPixelColor(i, Wheel((i+j) % 96, med));
-        else
-          strip.setPixelColor(i, Wheel((i+j) % 96, hi));
-        newseed();
+      if (lo != 0) {
+        med = lo * 4;
+        hi = lo * 32;
+        rainbow(j, strip, lo);
+        sparkle(sparklebuf, 1, med, hi);
+      } else {
+        med = 0;
+        hi = 0;
+        colorWipe(Color(0, 0, 0), 30);
       }
     }  
     strip.show();   // write all the pixels out
@@ -139,6 +144,29 @@ void colorWipe(uint16_t c, uint8_t wait) {
   while (millis() < time);
 }
 
+void rainbow(int start, LPD6803 strip, uint8_t intensity) {
+  for (int i = 0; i < strip.numPixels(); i++) {
+    strip.setPixelColor(i, Wheel((i+start) % 96, intensity + (sparklebuf[i] >> 3)));
+  }
+}
+
+void sparkle(uint16_t* buf, uint8_t num_pts, uint8_t lo, uint8_t hi) {
+  for (int i = 0; i < strip.numPixels(); i++) {
+    buf[i] *= 7;
+    buf[i] /= 8;
+  }
+  for (uint8_t i = 0; i < num_pts; i++) {
+    newseed();
+    uint16_t pt = seed % strip.numPixels();
+    newseed();
+    uint8_t brightness = seed % (hi - lo) + lo;
+    for (uint16_t j = 0; j < 7; j++) {
+      buf[(pt + j)%strip.numPixels()] += brightness*(j+1)*(7-j)/16;
+    }
+  }
+}
+
+
 /* Helper functions */
 
 // Create a 15 bit color value from R,G,B
@@ -147,16 +175,6 @@ unsigned int Color(byte r, byte g, byte b)
   //Take the lowest 5 bits of each value and append them end to end
   return( ((unsigned int)g & 0x1F )<<10 | ((unsigned int)b & 0x1F)<<5 | (unsigned int)r & 0x1F);
 }
-
-unsigned int Color(byte r, byte g, byte b, byte i)
-{
-  r = ((uint16_t(r) * i) >> 8);
-  g = ((uint16_t(g) * i) >> 8);
-  b = ((uint16_t(b) * i) >> 8);
-  //Take the lowest 5 bits of each value and append them end to end
-  return( ((unsigned int)g & 0x1F )<<10 | ((unsigned int)b & 0x1F)<<5 | (unsigned int)r & 0x1F);
-}
-
 
 //Input a value 0 to 127 to get a color value.
 //The colours are a transition r - g -b - back to r
@@ -183,9 +201,9 @@ unsigned int Wheel(byte WheelPos)
   }
   return(Color(r,g,b));
 }
-unsigned int Wheel(byte WheelPos, byte intensity)
+unsigned int Wheel(byte WheelPos, uint8_t intensity)
 {
-  byte r,g,b;
+  uint16_t r,g,b;
   switch(WheelPos >> 5)
   {
     case 0:
@@ -204,5 +222,40 @@ unsigned int Wheel(byte WheelPos, byte intensity)
       g=0;                  //green off
       break; 
   }
-  return(Color(r,g,b,intensity));
+  r = (r * intensity) >> 3;
+  g = (g * intensity) >> 3;
+  b = (b * intensity) >> 3;
+  r = r > 31 ? 31 : r;
+  g = g > 31 ? 31 : g;
+  b = b > 31 ? 31 : b;
+  return(Color(r,g,b));
+}
+unsigned int Wheel(byte WheelPos, uint8_t intensity, uint16_t offset)
+{
+  uint16_t r,g,b;
+  switch(WheelPos >> 5)
+  {
+    case 0:
+      r=31- WheelPos % 32;   //Red down
+      g=WheelPos % 32;      // Green up
+      b=0;                  //blue off
+      break; 
+    case 1:
+      g=31- WheelPos % 32;  //green down
+      b=WheelPos % 32;      //blue up
+      r=0;                  //red off
+      break; 
+    case 2:
+      b=31- WheelPos % 32;  //blue down 
+      r=WheelPos % 32;      //red up
+      g=0;                  //green off
+      break; 
+  }
+  r = (r * intensity + offset) >> 3;
+  g = (g * intensity + offset) >> 3;
+  b = (b * intensity + offset) >> 3;
+  r = r > 31 ? 31 : r;
+  g = g > 31 ? 31 : g;
+  b = b > 31 ? 31 : b;
+  return(Color(r,g,b));
 }
